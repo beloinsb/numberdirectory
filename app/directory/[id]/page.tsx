@@ -1,7 +1,8 @@
 import { createClient } from "@/lib/supabase/server";
+import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 
-async function verifyCurrentNumber(formData: FormData) {
+async function updateNumber(formData: FormData) {
   "use server";
 
   const supabase = await createClient();
@@ -10,133 +11,66 @@ async function verifyCurrentNumber(formData: FormData) {
     data: { user },
   } = await supabase.auth.getUser();
 
-  if (!user) redirect("/sign-in");
-
-  const numberId = formData.get("number_id") as string;
-  const worked = formData.get("worked") === "true";
-
-  await supabase.from("verifications").upsert(
-    {
-      number_id: numberId,
-      user_id: user.id,
-      worked,
-      comment: formData.get("comment") as string,
-    },
-    { onConflict: "number_id,user_id" }
-  );
-
-  if (!worked) {
-    await supabase
-      .from("numbers")
-      .update({ status: "needs_review" })
-      .eq("id", numberId);
+  if (!user) {
+    redirect("/sign-in");
   }
 
-  redirect(`/directory/${numberId}`);
-}
+  const id = formData.get("id") as string;
 
-async function suggestReplacement(formData: FormData) {
-  "use server";
+  const { error } = await supabase
+    .from("numbers")
+    .update({
+      label: formData.get("label") as string,
+      phone_number: formData.get("phone_number") as string,
+      department: formData.get("department") as string,
+      location: formData.get("location") as string,
+      notes: formData.get("notes") as string,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", id);
 
-  const supabase = await createClient();
-
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-
-  if (!user) redirect("/sign-in");
-
-  const numberId = formData.get("number_id") as string;
-
-  await supabase.from("replacement_suggestions").insert({
-    original_number_id: numberId,
-    suggested_phone_number: formData.get("suggested_phone_number") as string,
-    comment: formData.get("comment") as string,
-    suggested_by: user.id,
-  });
-
-  redirect(`/directory/${numberId}`);
-}
-
-async function deleteReplacementSuggestion(formData: FormData) {
-  "use server";
-
-  const supabase = await createClient();
-
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-
-  if (!user) redirect("/sign-in");
-
-  const suggestionId = formData.get("suggestion_id") as string;
-  const numberId = formData.get("number_id") as string;
-
-  await supabase
-    .from("replacement_suggestions")
-    .delete()
-    .eq("id", suggestionId)
-    .eq("suggested_by", user.id);
-
-  redirect(`/directory/${numberId}`);
-}
-
-async function verifyReplacement(formData: FormData) {
-  "use server";
-
-  const supabase = await createClient();
-
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-
-  if (!user) redirect("/sign-in");
-
-  const suggestionId = formData.get("suggestion_id") as string;
-  const numberId = formData.get("number_id") as string;
-
-  await supabase.from("replacement_verifications").upsert(
-    {
-      suggestion_id: suggestionId,
-      user_id: user.id,
-      worked: true,
-    },
-    { onConflict: "suggestion_id,user_id" }
-  );
-
-  const { count } = await supabase
-    .from("replacement_verifications")
-    .select("*", { count: "exact", head: true })
-    .eq("suggestion_id", suggestionId)
-    .eq("worked", true);
-
-  if ((count ?? 0) >= 2) {
-    const { data: suggestion } = await supabase
-      .from("replacement_suggestions")
-      .select("*")
-      .eq("id", suggestionId)
-      .single();
-
-    if (suggestion) {
-      await supabase
-        .from("numbers")
-        .update({
-          phone_number: suggestion.suggested_phone_number,
-          status: "verified",
-        })
-        .eq("id", numberId);
-
-      await supabase
-        .from("replacement_suggestions")
-        .update({ status: "approved" })
-        .eq("id", suggestionId);
-    }
+  if (error) {
+    throw new Error(`Unable to update contact: ${error.message}`);
   }
 
-  redirect(`/directory/${numberId}`);
+  revalidatePath("/directory");
+  revalidatePath(`/directory/${id}`);
+
+  redirect(`/directory/${id}`);
 }
 
-export default async function NumberReviewPage({
+async function deleteNumber(formData: FormData) {
+  "use server";
+
+  const supabase = await createClient();
+
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) {
+    redirect("/sign-in");
+  }
+
+  const id = formData.get("id") as string;
+  const confirmation = formData.get("confirmation") as string;
+
+  if (confirmation !== "DELETE") {
+    throw new Error('Type "DELETE" to confirm deletion.');
+  }
+
+  const { error } = await supabase.from("numbers").delete().eq("id", id);
+
+  if (error) {
+    throw new Error(`Unable to delete contact: ${error.message}`);
+  }
+
+  revalidatePath("/directory");
+
+  redirect("/directory");
+}
+
+export default async function EditNumberPage({
   params,
 }: {
   params: Promise<{ id: string }>;
@@ -144,117 +78,107 @@ export default async function NumberReviewPage({
   const { id } = await params;
   const supabase = await createClient();
 
-  const { data: number } = await supabase
-    .from("number_directory")
+  const { data: number, error } = await supabase
+    .from("numbers")
     .select("*")
     .eq("id", id)
     .single();
 
-  const { data: suggestions } = await supabase
-    .from("replacement_suggestions")
-    .select("*")
-    .eq("original_number_id", id)
-    .eq("status", "pending")
-    .order("created_at", { ascending: false });
-
-  if (!number) {
-    return <main className="p-6">Number not found.</main>;
+  if (error || !number) {
+    return <main className="p-6">Contact not found.</main>;
   }
 
   return (
-    <main className="p-6 max-w-2xl mx-auto space-y-8">
-      <a href="/directory" className="text-blue-600 underline">
-        ← Back to directory
+    <main className="p-6 max-w-xl mx-auto">
+      <a href={`/directory/${id}`} className="text-blue-600 underline">
+        ← Back to review
       </a>
 
-      <section className="border rounded-lg p-6">
-        <h1 className="text-3xl font-bold mb-4">{number.label}</h1>
+      <h1 className="text-3xl font-bold mt-6 mb-6">Edit Contact</h1>
 
-        <p className="text-sm text-gray-500 mb-2">Current number:</p>
-        <p className="text-4xl font-mono mb-4">{number.phone_number}</p>
+      <form action={updateNumber} className="space-y-4">
+        <input type="hidden" name="id" value={number.id} />
 
-        <p className="mb-2">👍 {number.verified_count} verified</p>
-        <p className="mb-4">👎 {number.failed_count} reported incorrect</p>
-
-        <form action={verifyCurrentNumber} className="space-y-3">
-          <input type="hidden" name="number_id" value={number.id} />
-
-          <textarea
-            name="comment"
-            placeholder="Optional comment"
-            className="border rounded p-2 w-full"
+        <div>
+          <label className="block text-sm font-medium mb-1">Label</label>
+          <input
+            name="label"
+            required
+            defaultValue={number.label}
+            className="border rounded-lg p-3 w-full"
           />
+        </div>
 
-          <button
-            name="worked"
-            value="true"
-            className="bg-green-600 text-white px-4 py-2 rounded-lg mr-2"
-          >
-            👍 This worked
-          </button>
+        <div>
+          <label className="block text-sm font-medium mb-1">
+            Phone Number
+          </label>
+          <input
+            name="phone_number"
+            required
+            defaultValue={number.phone_number}
+            className="border rounded-lg p-3 w-full"
+          />
+        </div>
 
-          <button
-            name="worked"
-            value="false"
-            className="bg-red-600 text-white px-4 py-2 rounded-lg"
-          >
-            👎 This is incorrect
-          </button>
-        </form>
-      </section>
+        <div>
+          <label className="block text-sm font-medium mb-1">Department</label>
+          <input
+            name="department"
+            defaultValue={number.department ?? ""}
+            className="border rounded-lg p-3 w-full"
+          />
+        </div>
 
-      {suggestions?.map((s) => (
-        <section key={s.id} className="border rounded-lg p-6 bg-yellow-50">
-          <p className="text-sm text-gray-600 mb-2">Suggested replacement:</p>
-          <p className="text-3xl font-mono mb-4">{s.suggested_phone_number}</p>
+        <div>
+          <label className="block text-sm font-medium mb-1">Location</label>
+          <input
+            name="location"
+            defaultValue={number.location ?? ""}
+            className="border rounded-lg p-3 w-full"
+          />
+        </div>
 
-          <p className="mb-4">
-            Needs 2 confirmations before replacing the current number.
-          </p>
+        <div>
+          <label className="block text-sm font-medium mb-1">Notes</label>
+          <textarea
+            name="notes"
+            defaultValue={number.notes ?? ""}
+            rows={4}
+            className="border rounded-lg p-3 w-full"
+          />
+        </div>
 
-          {s.comment && <p className="mb-4">Comment: {s.comment}</p>}
+        <button className="bg-blue-600 hover:bg-blue-700 text-white px-5 py-3 rounded-lg font-medium">
+          Save Changes
+        </button>
+      </form>
 
-          <form action={verifyReplacement}>
-            <input type="hidden" name="number_id" value={number.id} />
-            <input type="hidden" name="suggestion_id" value={s.id} />
+      <section className="border border-red-300 bg-red-50 rounded-lg p-5 mt-10">
+        <h2 className="text-xl font-bold text-red-800">Delete Contact</h2>
 
-            <button className="bg-green-600 text-white px-4 py-2 rounded-lg">
-              👍 Verify suggested replacement
-            </button>
-          </form>
+        <p className="text-red-700 mt-2">
+          This permanently removes the contact and its associated verification
+          history and replacement suggestions.
+        </p>
 
-          <form action={deleteReplacementSuggestion} className="mt-3">
-            <input type="hidden" name="number_id" value={number.id} />
-            <input type="hidden" name="suggestion_id" value={s.id} />
+        <form action={deleteNumber} className="mt-4 space-y-3">
+          <input type="hidden" name="id" value={number.id} />
 
-            <button className="bg-red-600 text-white px-4 py-2 rounded-lg">
-              Delete suggestion
-            </button>
-          </form>
-        </section>
-      ))}
-
-      <section className="border rounded-lg p-6">
-        <h2 className="text-xl font-bold mb-4">Suggest a replacement number</h2>
-
-        <form action={suggestReplacement} className="space-y-3">
-          <input type="hidden" name="number_id" value={number.id} />
+          <label className="block text-sm font-medium text-red-800">
+            Type DELETE to confirm
+          </label>
 
           <input
-            name="suggested_phone_number"
+            name="confirmation"
             required
-            placeholder="New number"
-            className="border rounded p-2 w-full"
+            autoComplete="off"
+            placeholder="DELETE"
+            className="border border-red-300 rounded-lg p-3 w-full"
           />
 
-          <textarea
-            name="comment"
-            placeholder="Why is this the correct replacement?"
-            className="border rounded p-2 w-full"
-          />
-
-          <button className="bg-blue-600 text-white px-4 py-2 rounded-lg">
-            Submit replacement suggestion
+          <button className="bg-red-600 hover:bg-red-700 text-white px-5 py-3 rounded-lg font-medium">
+            Permanently Delete Contact
           </button>
         </form>
       </section>

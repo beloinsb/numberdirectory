@@ -8,7 +8,10 @@ export default async function DirectoryPage({
   const supabase = await createClient();
   const { q } = await searchParams;
 
-  let query = supabase.from("number_directory").select("*").order("label");
+  let query = supabase
+    .from("number_directory")
+    .select("*")
+    .order("label");
 
   if (q && q.trim() !== "") {
     query = query.or(
@@ -77,13 +80,23 @@ export default async function DirectoryPage({
               <td className="p-3 font-mono">{n.phone_number}</td>
               <td className="p-3">{n.department}</td>
               <td className="p-3">{n.location}</td>
+
               <td className="p-3">
-                <a
-                  href={`/directory/${n.id}`}
-                  className="bg-gray-200 hover:bg-gray-300 px-3 py-2 rounded-lg text-sm"
-                >
-                  Review
-                </a>
+                <div className="flex gap-2">
+                  <a
+                    href={`/directory/${n.id}`}
+                    className="bg-gray-200 hover:bg-gray-300 px-3 py-2 rounded-lg text-sm"
+                  >
+                    Review
+                  </a>
+
+                  <a
+                    href={`/directory/${n.id}/edit`}
+                    className="bg-blue-100 hover:bg-blue-200 text-blue-800 px-3 py-2 rounded-lg text-sm"
+                  >
+                    Edit
+                  </a>
+                </div>
               </td>
             </tr>
           ))}
